@@ -1,0 +1,27 @@
+# ===========================================================================
+#  .gitignore — fichiers à NE PAS versionner
+# ===========================================================================
+
+# Secrets / variables d'environnement (le .env.example, lui, EST versionné)
+.env
+
+# Dépendances Node (réinstallées via npm install dans Docker)
+node_modules/
+front/node_modules/
+back/node_modules/
+
+# Résultat de build du front
+front/dist/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Fichiers d'OS / d'éditeurs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+REVISION-ORAL.md

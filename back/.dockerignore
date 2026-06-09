@@ -1,0 +1,11 @@
+# Fichiers et dossiers EXCLUS du contexte de build envoyé au daemon Docker.
+# Avantages : build plus rapide, image plus petite, pas de fuite de secrets.
+
+node_modules     # dépendances : réinstallées proprement par "npm install" dans l'image
+npm-debug.log    # logs de debug npm
+.env             # secrets : ne JAMAIS copier dans l'image
+.git             # historique git inutile dans l'image
+.gitignore
+Dockerfile       # le Dockerfile lui-même n'a pas besoin d'être dans l'image
+.dockerignore
+*.md             # documentation

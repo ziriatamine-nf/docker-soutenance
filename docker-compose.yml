@@ -1,0 +1,134 @@
+# ============================================================================
+#  docker-compose.yml — Orchestration des 3 conteneurs de l'application
+#  ---------------------------------------------------------------------------
+#  Stack : Vue.js (Nginx)  ->  API Express (Node)  ->  MariaDB
+#
+#  Points "Docker" démontrés ici (le coeur de l'évaluation) :
+#    - 3 services : frontend, backend, db
+#    - 2 réseaux personnalisés (bridge) pour ISOLER la base de données
+#    - 1 volume nommé pour la PERSISTANCE des données
+#    - 1 bind mount pour initialiser la base (init.sql)
+#    - HEALTHCHECKS + depends_on/condition pour un démarrage ordonné
+#    - variables sensibles externalisées dans un fichier .env
+#    - UN SEUL port publié (le frontend) : backend et db restent privés
+#
+#  NB : pas de clé "version:" -> obsolète avec Docker Compose v2.
+# ============================================================================
+
+services:
+
+  # ==========================================================================
+  #  FRONT-END — Vue.js compilé puis servi par Nginx (+ reverse proxy /api)
+  # ==========================================================================
+  frontend:
+    build:
+      context: ./front          # dossier contenant le Dockerfile et le code
+      dockerfile: Dockerfile
+    # image: nom/tag attribué à l'image construite. Le préfixe ${DOCKERHUB_USER}
+    # (lu dans .env) prépare le push sur Docker Hub. "docker compose build" tague
+    # donc directement l'image prête à pousser.
+    image: ${DOCKERHUB_USER}/todo-frontend:v1.0
+    container_name: todo-frontend
+    restart: unless-stopped     # redémarre le conteneur sauf si arrêté manuellement
+    # SEUL port publié sur l'hôte : http://localhost:8080 -> port 80 du conteneur.
+    # Format "hôte:conteneur".
+    ports:
+      - "8080:80"
+    networks:
+      - frontend-net            # le front n'est QUE sur frontend-net (pas d'accès à la db)
+    depends_on:
+      backend:
+        condition: service_healthy   # attend que le backend soit "healthy" avant de démarrer
+
+  # ==========================================================================
+  #  BACK-END — API REST Node.js / Express
+  # ==========================================================================
+  backend:
+    build:
+      context: ./back
+      dockerfile: Dockerfile
+    image: ${DOCKERHUB_USER}/todo-backend:v1.0
+    container_name: todo-backend
+    restart: unless-stopped
+    # Variables d'environnement de connexion à la base.
+    # Les valeurs ${...} sont interpolées par Compose depuis le fichier .env :
+    # on ne RÉPÈTE donc pas les mots de passe ici (single source of truth).
+    environment:
+      DB_HOST: db               # "db" = nom du service ci-dessous, résolu par le DNS Docker
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_NAME: ${MYSQL_DATABASE}
+      PORT: 3000
+    # AUCUN "ports:" ici  ->  le backend n'est PAS accessible depuis l'hôte.
+    # On y accède uniquement via le reverse proxy Nginx (réseau frontend-net).
+    networks:
+      - frontend-net            # pour être joignable par le frontend (Nginx)
+      - backend-net             # pour pouvoir joindre la base de données
+    depends_on:
+      db:
+        condition: service_healthy   # attend que MariaDB soit prête avant de se connecter
+    # Healthcheck : Docker interroge /api/health. Tant que ça ne répond pas 200,
+    # le service est "starting/unhealthy" et le frontend (qui en dépend) attend.
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s             # fréquence du test
+      timeout: 5s               # délai max d'une tentative
+      retries: 5                # nb d'échecs consécutifs avant de passer "unhealthy"
+      start_period: 20s         # période de grâce au démarrage (le temps du retry DB)
+
+  # ==========================================================================
+  #  BASE DE DONNÉES — MariaDB (image officielle, NON modifiée -> pas de Dockerfile)
+  # ==========================================================================
+  db:
+    image: mariadb:11.4         # version LTS épinglée (bonne pratique vs "latest")
+    container_name: todo-db
+    restart: unless-stopped
+    # env_file : charge les variables sensibles depuis .env DANS le conteneur.
+    # L'image MariaDB lit MYSQL_ROOT_PASSWORD / MYSQL_DATABASE / MYSQL_USER /
+    # MYSQL_PASSWORD pour créer la base et l'utilisateur au premier démarrage.
+    env_file:
+      - .env
+    # AUCUN "ports:" -> la base n'est JOIGNABLE QUE depuis le réseau backend-net.
+    networks:
+      - backend-net
+    volumes:
+      # 1) VOLUME NOMMÉ : persistance des données. Les fichiers de la base vivent
+      #    dans le volume "db_data" (géré par Docker), pas dans le conteneur.
+      #    -> les données survivent à "docker compose down".
+      - db_data:/var/lib/mysql
+      # 2) BIND MOUNT (lecture seule) : notre script d'init est monté dans le
+      #    dossier spécial de l'image. Il n'est exécuté qu'au 1er démarrage.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Healthcheck officiel MariaDB : le script healthcheck.sh est fourni par
+    # l'image. --connect vérifie qu'on peut se connecter, --innodb_initialized
+    # que le moteur est prêt. C'est CE healthcheck qui débloque le backend.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s         # MariaDB peut être longue à initialiser au 1er run
+
+# ============================================================================
+#  RÉSEAUX PERSONNALISÉS (driver bridge)
+#  Deux réseaux pour CLOISONNER les communications :
+#    - frontend-net : frontend <-> backend
+#    - backend-net  : backend  <-> db   (internal: true => coupé d'Internet/hôte)
+#  Conséquence : le frontend ne partage AUCUN réseau avec la db
+#  -> il ne peut même pas RÉSOUDRE le nom "db" ni l'atteindre. Isolation prouvée.
+# ============================================================================
+networks:
+  frontend-net:
+    driver: bridge
+  backend-net:
+    driver: bridge
+    internal: true              # réseau interne : aucune route vers l'extérieur
+
+# ============================================================================
+#  VOLUMES NOMMÉS
+#  db_data est géré par Docker (stocké dans /var/lib/docker/volumes/...).
+#  Il n'est supprimé que par "docker compose down --volumes" (ou docker volume rm).
+# ============================================================================
+volumes:
+  db_data:
