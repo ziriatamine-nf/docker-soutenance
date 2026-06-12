@@ -1,13 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue';
 
-// ---------------------------------------------------------------------------
-//  Point IMPORTANT côté Docker :
-//  L'URL de l'API est RELATIVE ("/api/..."), pas "http://localhost:3000".
-//  Le navigateur appelle donc le MÊME hôte que le front (http://localhost:8080),
-//  et c'est Nginx (reverse proxy) qui redirige /api vers le conteneur backend.
-//  => le front n'a aucune connaissance de l'adresse du backend.
-// ---------------------------------------------------------------------------
+
 const API = '/api/tasks';
 
 const tasks = ref([]);
